@@ -8,10 +8,8 @@ const app = express();
 // --------------------
 // PARSE INCOMING WEBHOOKS
 // --------------------
-// Parse URL-encoded (form) payloads
-app.use(express.urlencoded({ extended: true }));
-// Parse JSON payloads
-app.use(express.json());
+app.use(express.urlencoded({ extended: true })); // URL-encoded payloads
+app.use(express.json()); // JSON payloads
 
 // --------------------
 // CONFIG
@@ -86,13 +84,13 @@ async function blockUnblockSim(i_account, action) {
 app.post("/splynx-webhook", async (req, res) => {
     console.log("WEBHOOK: RAW payload received:", req.body);
 
-    // Splynx may send 'id' or 'customer_id'
-    const customerId = req.body.customer_id || req.body.id;
-    const status = req.body.status?.toLowerCase();
+    // Accept any of these variations from Splynx
+    const customerId = req.body.customer_id || req.body.id || req.body.customerId;
+    const status = (req.body.status || req.body.Status || req.body.STATUS)?.toLowerCase();
 
     if (!customerId || !status) {
-        console.log("WEBHOOK ERROR: customer_id/id or status missing");
-        return res.status(400).json({ error: "customer_id/id and status required" });
+        console.log("WEBHOOK ERROR: customer_id/id/customerId or status missing");
+        return res.status(400).json({ error: "customer_id/id/customerId and status required" });
     }
 
     console.log(`WEBHOOK: Parsed → customer_id=${customerId}, status=${status}`);
