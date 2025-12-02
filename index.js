@@ -4,6 +4,13 @@ const https = require("https");
 require("dotenv").config();
 
 const app = express();
+
+// --------------------
+// PARSE INCOMING WEBHOOKS
+// --------------------
+// Parse URL-encoded (form) payloads
+app.use(express.urlencoded({ extended: true }));
+// Parse JSON payloads
 app.use(express.json());
 
 // --------------------
@@ -79,6 +86,7 @@ async function blockUnblockSim(i_account, action) {
 app.post("/splynx-webhook", async (req, res) => {
     console.log("WEBHOOK: RAW payload received:", req.body);
 
+    // Splynx may send 'id' or 'customer_id'
     const customerId = req.body.customer_id || req.body.id;
     const status = req.body.status?.toLowerCase();
 
