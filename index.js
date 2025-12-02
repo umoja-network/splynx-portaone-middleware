@@ -1,5 +1,6 @@
 const express = require("express");
 const axios = require("axios");
+const https = require("https");
 require("dotenv").config();
 
 const app = express();
@@ -17,6 +18,11 @@ const SPLYNX_AUTH = "Basic NGQwNzQwZGE2NjFjYjRlYTQzMjM2NmM5MGZhZGUxOWU6MmE0ZDkzO
 const STATUS_BLOCK = ["new", "blocked", "inactive"];
 const STATUS_UNBLOCK = ["active"];
 
+// Create HTTPS agent to accept self-signed certificates (testing only)
+const portaOneAgent = new https.Agent({
+    rejectUnauthorized: false
+});
+
 // -------------------------------------------------------
 // STEP 1: GET msisdn_id FROM INVENTORY BY customer_id
 // -------------------------------------------------------
@@ -28,7 +34,7 @@ async function getMsisdnIdByCustomerId(customerId) {
                 Authorization: SPLYNX_AUTH,
                 "Content-Type": "application/json",
             },
-            timeout: 10000 // 10 seconds
+            timeout: 10000
         });
 
         const items = response.data || [];
@@ -68,7 +74,8 @@ async function blockUnblockSim(i_account, action) {
                 headers: {
                     Authorization: `Bearer ${PORTAONE_API_KEY}`,
                     "Content-Type": "application/json"
-                }
+                },
+                httpsAgent: portaOneAgent // bypass SSL cert verification
             }
         );
 
@@ -94,10 +101,10 @@ app.post("/splynx-webhook", async (req, res) => {
 
     console.log(`Webhook parsed → customer_id=${customerId}, status=${status}`);
 
-    // ✅ Immediately respond success so webhook doesn't hang
+    // Immediately respond success
     res.json({ success: true });
 
-    // Do the inventory lookup and block/unblock asynchronously
+    // Do inventory lookup & block/unblock asynchronously
     (async () => {
         const i_account = await getMsisdnIdByCustomerId(customerId);
 
