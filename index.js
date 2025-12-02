@@ -84,9 +84,15 @@ async function blockUnblockSim(i_account, action) {
 app.post("/splynx-webhook", async (req, res) => {
     console.log("WEBHOOK: RAW payload received:", req.body);
 
+    // Accept Splynx test webhook (ping)
+    if (req.body.type === "ping") {
+        console.log("WEBHOOK: Ping received from Splynx");
+        return res.json({ success: true });
+    }
+
     // Accept any of these variations from Splynx
-    const customerId = req.body.customer_id || req.body.id || req.body.customerId;
-    const status = (req.body.status || req.body.Status || req.body.STATUS)?.toLowerCase();
+    const customerId = req.body.customer_id
+    const status = (req.body.status)?.toLowerCase();
 
     if (!customerId || !status) {
         console.log("WEBHOOK ERROR: customer_id/id/customerId or status missing");
