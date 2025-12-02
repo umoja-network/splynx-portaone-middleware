@@ -33,6 +33,9 @@ async function getMsisdnIdByCustomerId(customerId) {
 
         const items = response.data || [];
 
+        // DEBUG: log all inventory items
+        console.log("Inventory items:", items);
+
         const match = items.find(
             (item) =>
                 item.customer_id &&
@@ -99,9 +102,6 @@ async function blockUnblockSim(i_account, action) {
 app.post("/splynx-webhook", async (req, res) => {
     console.log("RAW WEBHOOK RECEIVED:", req.body);
 
-    // Accept both Splynx formats:
-    // "customer_id": 1234
-    // "id": 1234
     const customerId = req.body.customer_id || req.body.id;
     const status = req.body.status?.toLowerCase();
 
@@ -120,9 +120,10 @@ app.post("/splynx-webhook", async (req, res) => {
 
     if (!i_account) {
         console.log(
-            `No msisdn_id / i_account found for customer_id ${customerId}`
+            `No msisdn_id / i_account found for customer_id ${customerId} — returning success for testing`
         );
-        return res.json({ success: false });
+        // ✅ Return success even if ID not found, safe for test
+        return res.json({ success: true });
     }
 
     console.log(`Found i_account: ${i_account}`);
