@@ -6,10 +6,10 @@ require("dotenv").config();
 const app = express();
 
 // --------------------
-// PARSE INCOMING WEBHOOKS
+// PARSE WEBHOOK BODY
 // --------------------
-app.use(express.urlencoded({ extended: true })); // URL-encoded payloads
-app.use(express.json()); // JSON payloads
+app.use(express.urlencoded({ extended: true }));
+app.use(express.json());
 
 // --------------------
 // CONFIG
@@ -17,39 +17,53 @@ app.use(express.json()); // JSON payloads
 const PORTAONE_API_URL = process.env.PORTAONE_API_URL;
 const PORTAONE_API_KEY = process.env.PORTAONE_API_KEY;
 
-const SPLYNX_INV_URL = "https://portal.umoja.network/api/2.0/admin/inventory/items";
-const SPLYNX_AUTH = "Basic NGQwNzQwZGE2NjFjYjRlYTQzMjM2NmM5MGZhZGUxOWU6MmE0ZDkzOGVkNTYyMjg5MmExNDdmMjZjMmVlNTI2MmI=";
+const SPLYNX_INV_URL =
+    "https://portal.umoja.network/api/2.0/admin/inventory/items";
 
+const SPLYNX_AUTH =
+    "Basic NGQwNzQwZGE2NjFjYjRlYTQzMjM2NmM5MGZhZGUxOWU6MmE0ZDkzOGVkNTYyMjg5MmExNDdmMjZjMmVlNTI2MmI=";
+
+// Accepted status mapping
 const STATUS_BLOCK = ["new", "blocked", "inactive"];
 const STATUS_UNBLOCK = ["active"];
 
-// HTTPS agent for PortaOne self-signed certs
+// Accept PortaOne self-signed cert
 const portaOneAgent = new https.Agent({ rejectUnauthorized: false });
 
 // --------------------
-// GET msisdn_id FROM INVENTORY
+// FETCH i_account FROM INVENTORY
 // --------------------
-async function getMsisdnIdByCustomerId(customerId) {
+async function getMsisdnId(customerId) {
     try {
         console.log("INVENTORY: Fetching items from Splynx...");
+
         const response = await axios.get(SPLYNX_INV_URL, {
-            headers: { Authorization: SPLYNX_AUTH, "Content-Type": "application/json" },
-            timeout: 10000
+            headers: {
+                Authorization: SPLYNX_AUTH,
+                "Content-Type": "application/json",
+            },
+            timeout: 15000,
         });
 
         const items = response.data || [];
         console.log(`INVENTORY: ${items.length} items fetched`);
 
+        // Filter by customer + product_id = 5
         const match = items.find(
-            item => item.customer_id && Number(item.customer_id) === Number(customerId)
+            (item) =>
+                Number(item.customer_id) === Number(customerId) &&
+                Number(item.product_id) === 5
         );
 
         if (!match) {
-            console.log(`INVENTORY: No item found for customer_id ${customerId}`);
+            console.log(
+                `INVENTORY: No match for customer_id=${customerId} AND product_id=5`
+            );
             return null;
         }
 
-        return match.additional_attributes?.msisdn_id || null;
+        const i_account = match.additional_attributes?.msisdn_id;
+        return i_account || null;
     } catch (err) {
         console.error("INVENTORY ERROR:", err.response?.data || err.message);
         return null;
@@ -57,70 +71,112 @@ async function getMsisdnIdByCustomerId(customerId) {
 }
 
 // --------------------
-// BLOCK / UNBLOCK SIM USING PORTAONE
+// BLOCK / UNBLOCK SIM (PortaOne)
 // --------------------
 async function blockUnblockSim(i_account, action) {
     try {
         const blocked = action === "block" ? "Y" : "N";
+
+        const payload = {
+            params: {
+                account_info: {
+                    i_account: Number(i_account),
+                    blocked,
+                },
+            },
+        };
+
+        console.log("PORTAONE → Sending payload:", payload);
+
         const response = await axios.post(
             `${PORTAONE_API_URL}/Account/update_account`,
-            { params: { account_info: { i_account, blocked } } },
+            payload,
             {
-                headers: { Authorization: `Bearer ${PORTAONE_API_KEY}`, "Content-Type": "application/json" },
-                httpsAgent: portaOneAgent
+                headers: {
+                    Authorization: `Bearer ${PORTAONE_API_KEY}`,
+                    "Content-Type": "application/json",
+                },
+                httpsAgent: portaOneAgent,
+                timeout: 15000,
             }
         );
 
-        console.log(`PORTAONE: ${action.toUpperCase()} successful for i_account ${i_account}`);
+        console.log(
+            `PORTAONE: ${action.toUpperCase()} successful for i_account ${i_account}`
+        );
+
         return response.data;
     } catch (err) {
-        console.error("PORTAONE ERROR:", err.response?.data || err.message);
+        console.error(
+            "PORTAONE ERROR:",
+            err.response?.data || err.message
+        );
+        return null;
     }
 }
 
 // --------------------
-// WEBHOOK FROM SPLYNX
+// WEBHOOK ENDPOINT
 // --------------------
 app.post("/splynx-webhook", async (req, res) => {
-    console.log("WEBHOOK: RAW payload received:", req.body);
+    console.log("WEBHOOK RAW:", req.body);
 
-    // Accept Splynx test webhook (ping)
+    // Handle Splynx webhook test
     if (req.body.type === "ping") {
-        console.log("WEBHOOK: Ping received from Splynx");
+        console.log("WEBHOOK: Splynx ping received");
         return res.json({ success: true });
     }
 
-    // Accept any of these variations from Splynx
-    const customerId = req.body.customer_id
-    const status = (req.body.status)?.toLowerCase();
+    // Splynx sends: { data: { attributes: { id, status } } }
+    const customerId =
+        req.body.data?.attributes?.id ||
+        req.body.customer_id ||
+        req.body.id;
+
+    const status =
+        req.body.data?.attributes?.status ||
+        req.body.status ||
+        req.body.customer_status;
 
     if (!customerId || !status) {
-        console.log("WEBHOOK ERROR: customer_id/id/customerId or status missing");
-        return res.status(400).json({ error: "customer_id/id/customerId and status required" });
+        console.log(
+            "WEBHOOK ERROR: Missing customer id or status"
+        );
+        return res
+            .status(400)
+            .json({ error: "customer_id and status required" });
     }
 
-    console.log(`WEBHOOK: Parsed → customer_id=${customerId}, status=${status}`);
+    const normalizedStatus = status.toLowerCase();
 
-    // Immediate response to Splynx
+    console.log(
+        `WEBHOOK: Parsed → customer_id=${customerId}, status=${normalizedStatus}`
+    );
+
+    // Respond to Splynx instantly
     res.json({ success: true });
 
-    // Async processing
+    // Continue processing async
     (async () => {
-        const i_account = await getMsisdnIdByCustomerId(customerId);
+        const i_account = await getMsisdnId(customerId);
 
         if (!i_account) {
-            console.log(`INVENTORY: No i_account found for customer_id ${customerId}`);
+            console.log(
+                `INVENTORY: No i_account found for customer_id ${customerId}`
+            );
             return;
         }
 
-        console.log(`INVENTORY: Found i_account: ${i_account}`);
+        console.log(`INVENTORY: Found i_account = ${i_account}`);
 
-        if (STATUS_BLOCK.includes(status)) {
+        if (STATUS_BLOCK.includes(normalizedStatus)) {
             await blockUnblockSim(i_account, "block");
-        } else if (STATUS_UNBLOCK.includes(status)) {
+        } else if (STATUS_UNBLOCK.includes(normalizedStatus)) {
             await blockUnblockSim(i_account, "unblock");
         } else {
-            console.log(`WEBHOOK: Status "${status}" ignored — no action`);
+            console.log(
+                `WEBHOOK: Status "${normalizedStatus}" ignored — no action taken`
+            );
         }
     })();
 });
@@ -128,4 +184,8 @@ app.post("/splynx-webhook", async (req, res) => {
 // --------------------
 // START SERVER
 // --------------------
-app.listen(5000, () => console.log("✅ Middleware running on port 5000 — ready to receive webhooks"));
+app.listen(5000, () =>
+    console.log(
+        "✅ Middleware running on port 5000 — Ready to receive Splynx webhooks"
+    )
+);
