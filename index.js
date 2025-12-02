@@ -10,12 +10,14 @@ const PORTAONE_API_URL = process.env.PORTAONE_API_URL;
 const PORTAONE_API_KEY = process.env.PORTAONE_API_KEY;
 
 // Splynx Inventory API details
-const SPLYNX_INV_URL = "https://portal.umoja.network/api/2.0/admin/inventory/items";
-const SPLYNX_AUTH = "Basic NGQwNzQwZGE2NjFjYjRlYTQzMjM2NmM5MGZhZGUxOWU6MmE0ZDkzOGVkNTYyMjg5MmExNDdmMjZjMmVlNTI2MmI=";
+const SPLYNX_INV_URL =
+    "https://portal.umoja.network/api/2.0/admin/inventory/items";
+const SPLYNX_AUTH =
+    "Basic NGQwNzQwZGE2NjFjYjRlYTQzMjM2NmM5MGZhZGUxOWU6MmE0ZDkzOGVkNTYyMjg5MmExNDdmMjZjMmVlNTI2MmI=";
 
 // Status mapping
-const STATUS_BLOCK = ["New", "Blocked", "Inactive"];
-const STATUS_UNBLOCK = ["Active"];
+const STATUS_BLOCK = ["new", "blocked", "inactive"];
+const STATUS_UNBLOCK = ["active"];
 
 // -------------------------------------------------------
 // STEP 1: GET msisdn_id FROM INVENTORY BY customer_id
@@ -24,34 +26,38 @@ async function getMsisdnIdByCustomerId(customerId) {
     try {
         const response = await axios.get(SPLYNX_INV_URL, {
             headers: {
-                "Authorization": SPLYNX_AUTH,
-                "Content-Type": "application/json"
-            }
+                Authorization: SPLYNX_AUTH,
+                "Content-Type": "application/json",
+            },
         });
 
         const items = response.data || [];
 
-        // Filter inventory items where customer_id matches
         const match = items.find(
-            item => item.customer_id && Number(item.customer_id) === Number(customerId)
+            (item) =>
+                item.customer_id &&
+                Number(item.customer_id) === Number(customerId)
         );
 
         if (!match) {
-            console.log(`No inventory item found for customer_id ${customerId}`);
+            console.log(
+                `No inventory item found for customer_id ${customerId}`
+            );
             return null;
         }
 
-        // Return msisdn_id from additional attributes
         return match.additional_attributes?.msisdn_id || null;
-
     } catch (err) {
-        console.error("Error fetching inventory:", err.response?.data || err.message);
+        console.error(
+            "Error fetching inventory:",
+            err.response?.data || err.message
+        );
         return null;
     }
 }
 
 // -------------------------------------------------------
-// STEP 2: BLOCK / UNBLOCK SIM USING PortaOne
+// STEP 2: BLOCK / UNBLOCK SIM USING PORTAONE
 // -------------------------------------------------------
 async function blockUnblockSim(i_account, action) {
     try {
@@ -63,60 +69,79 @@ async function blockUnblockSim(i_account, action) {
                 params: {
                     account_info: {
                         i_account,
-                        blocked
-                    }
-                }
+                        blocked,
+                    },
+                },
             },
             {
                 headers: {
                     Authorization: `Bearer ${PORTAONE_API_KEY}`,
-                    "Content-Type": "application/json"
-                }
+                    "Content-Type": "application/json",
+                },
             }
         );
 
-        console.log(`${action.toUpperCase()} successful for i_account ${i_account}`);
+        console.log(
+            `${action.toUpperCase()} successful for i_account ${i_account}`
+        );
         return response.data;
-
     } catch (err) {
-        console.error(`Error updating PortaOne account:`, err.response?.data || err.message);
+        console.error(
+            "Error updating PortaOne account:",
+            err.response?.data || err.message
+        );
     }
 }
-
 
 // -------------------------------------------------------
 // STEP 3: WEBHOOK FROM SPLYNX
 // -------------------------------------------------------
 app.post("/splynx-webhook", async (req, res) => {
-    const { customer_id, status } = req.body;
+    console.log("RAW WEBHOOK RECEIVED:", req.body);
 
-    if (!customer_id || !status) {
-        return res.status(400).json({ error: "customer_id and status required" });
+    // Accept both Splynx formats:
+    // "customer_id": 1234
+    // "id": 1234
+    const customerId = req.body.customer_id || req.body.id;
+    const status = req.body.status?.toLowerCase();
+
+    if (!customerId || !status) {
+        return res
+            .status(400)
+            .json({ error: "customer_id/id and status required" });
     }
 
-    console.log(`Webhook received → customer=${customer_id}, status=${status}`);
+    console.log(
+        `Webhook Parsed → customer_id=${customerId}, status=${status}`
+    );
 
-    // Get msisdn_id = PortaOne i_account
-    const i_account = await getMsisdnIdByCustomerId(customer_id);
+    // Get PortaOne i_account from inventory
+    const i_account = await getMsisdnIdByCustomerId(customerId);
 
     if (!i_account) {
-        console.log("No msisdn_id found in inventory. Cannot proceed");
+        console.log(
+            `No msisdn_id / i_account found for customer_id ${customerId}`
+        );
         return res.json({ success: false });
     }
 
-    console.log(`Found i_account from inventory: ${i_account}`);
+    console.log(`Found i_account: ${i_account}`);
 
-    // Block/Unblock
+    // Apply SIM block or unblock logic
     if (STATUS_BLOCK.includes(status)) {
         await blockUnblockSim(i_account, "block");
     } else if (STATUS_UNBLOCK.includes(status)) {
         await blockUnblockSim(i_account, "unblock");
     } else {
-        console.log("Unknown status — no action");
+        console.log(`Status "${status}" ignored — no action`);
     }
 
     res.json({ success: true });
 });
 
-// Start server
-app.listen(5000, () => console.log("Middleware running on port 5000"));
+// -------------------------------------------------------
+// START SERVER
+// -------------------------------------------------------
+app.listen(5000, () =>
+    console.log("Middleware running on port 5000")
+);
