@@ -16,7 +16,7 @@ const SPLYNX_INV_URL =
   "https://portal.umoja.network/api/2.0/admin/inventory/items";
 
 const SPLYNX_AUTH =
-  "Basic NGQwNzQwZGE2NjFjYjRlYTQzMjM2NmM5MGZhZGUxOWU6MmE0ZDkzOGVkNTYyMjg5MmExNDdmMjZjMmVlNTI2MmI=";
+  "Basic NGQwNzQwZGA2NjFjYjRlYTQzMjM2NmM5MGZhZGUxOWU6MmE0ZDkzOGVkNTYyMjg5MmExNDdmMjZjMmVlNTI2MmI=";
 
 const portaOneAgent = new https.Agent({ rejectUnauthorized: false });
 
@@ -89,14 +89,12 @@ async function blockUnblockSim(i_account, action) {
     }
   }
 
-  console.error(
-    `❌ PORTAONE: All retries failed for i_account ${i_account}`
-  );
+  console.error(`❌ PORTAONE: All retries failed for i_account ${i_account}`);
   return false;
 }
 
 // --------------- WEBHOOK HANDLER ---------------
-// --------------- WEBHOOK HANDLER ---------------
+
 app.post("/splynx-webhook", async (req, res) => {
   console.log("WEBHOOK: Payload received");
 
@@ -109,7 +107,6 @@ app.post("/splynx-webhook", async (req, res) => {
   const extra = data.attributes_additional || {};
   const changed = data.changed_attributes || {};
 
-  // Extract customer_id
   const customerId = data.customer_id || attributes.id;
 
   if (!customerId) {
@@ -117,53 +114,61 @@ app.post("/splynx-webhook", async (req, res) => {
     return res.status(400).json({ error: "Missing customer_id" });
   }
 
-  // 1. Check if RELEVANT fields changed
-  // We proceed if 'status' changed OR 'sim_status' changed
+  // Determine which fields changed
   const mainStatusChanged = !!changed.status;
-  // Note: Check the exact key name Splynx uses for custom field changes in your specific version logs. 
-  // It is usually the field name (e.g., 'sim_status').
-  const simStatusChanged = !!changed.sim_status; 
+  const simStatusChanged = !!changed.sim_status;
 
   if (!mainStatusChanged && !simStatusChanged) {
-    console.log(`IGNORED: Neither 'status' nor 'sim_status' changed for ID ${customerId}`);
+    console.log(
+      `IGNORED: Neither 'status' nor 'sim_status' changed for ID ${customerId}`
+    );
     return res.json({ ignored: true });
   }
 
-  // 2. Determine EFFECTIVE Status
   const mainStatus = (attributes.status || "").toLowerCase();
   const simStatus = (extra.sim_status || "").toLowerCase();
 
-  let action = null; // 'block' or 'unblock'
+  // ------------- NEW FEATURE: SKIP WHEN SIM STATUS IS EMPTY -------------
+  if (simStatus === "" || simStatus === null || simStatus === undefined) {
+    console.log(
+      `SKIPPED: SIM STATUS IS EMPTY for customer ${customerId} — no action taken`
+    );
 
-  // LOGIC: Main Status overrides everything if blocked. 
-  // If Main is active, Sim Status takes over.
-  
+    return res.json({
+      skipped: true,
+      reason: "Sim status empty",
+    });
+  }
+  // ----------------------------------------------------------------------
+
+  let action = null;
+
   if (STATUS_BLOCK.includes(mainStatus)) {
-    // If Customer is Inactive/Blocked -> BLOCK SIM
     action = "block";
-    console.log(`DECISION: Customer Status is '${mainStatus}' -> BLOCKING`);
-  } 
-  else if (STATUS_UNBLOCK.includes(mainStatus)) {
-    // Customer is Active, now check the specific SIM field
+    console.log(`DECISION: Main Status '${mainStatus}' → BLOCK`);
+  } else if (STATUS_UNBLOCK.includes(mainStatus)) {
     if (STATUS_BLOCK.includes(simStatus)) {
       action = "block";
-      console.log(`DECISION: Customer is Active but Sim Status is '${simStatus}' -> BLOCKING`);
+      console.log(
+        `DECISION: Main = Active but SIM '${simStatus}' → BLOCK`
+      );
     } else {
       action = "unblock";
-      console.log(`DECISION: Customer is Active and Sim Status is '${simStatus}' -> UNBLOCKING`);
+      console.log(`DECISION: Main = Active and SIM '${simStatus}' → UNBLOCK`);
     }
   }
 
   if (!action) {
-    console.log(`WEBHOOK ERROR: Could not determine action from Status: '${mainStatus}' / Sim: '${simStatus}'`);
-    // Return success to Splynx so it stops retrying, but log the error
+    console.log(
+      `WEBHOOK ERROR: Unknown mapping (main='${mainStatus}', sim='${simStatus}')`
+    );
     return res.json({ error: "Unknown status mapping" });
   }
 
-  // Send immediate response to Splynx
+  // Respond immediately
   res.json({ success: true, action_taken: action });
 
-  // 3. Execute Async Logic
+  // Async processing
   (async () => {
     const i_account = await getMsisdnIdByCustomerId(customerId);
 
@@ -172,10 +177,13 @@ app.post("/splynx-webhook", async (req, res) => {
       return;
     }
 
-    console.log(`EXECUTING: ${action.toUpperCase()} for i_account ${i_account}`);
+    console.log(
+      `EXECUTING: ${action.toUpperCase()} for i_account ${i_account}`
+    );
     await blockUnblockSim(i_account, action);
   })();
 });
+
 // --------------- START SERVER ---------------
 const PORT = process.env.PORT || 5000;
 app.listen(PORT, () =>
