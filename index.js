@@ -5,131 +5,164 @@ require("dotenv").config();
 
 const app = express();
 
-// --------------------
-// PARSE INCOMING WEBHOOKS
-// --------------------
 app.use(express.urlencoded({ extended: true }));
 app.use(express.json());
 
-// --------------------
-// CONFIG
-// --------------------
+// -------------------- CONFIG --------------------
 const PORTAONE_API_URL = process.env.PORTAONE_API_URL;
 const PORTAONE_API_KEY = process.env.PORTAONE_API_KEY;
 
-const SPLYNX_INV_URL = "https://portal.umoja.network/api/2.0/admin/inventory/items";
-const SPLYNX_AUTH = "Basic NGQwNzQwZGE2NjFjYjRlYTQzMjM2NmM5MGZhZGUxOWU6MmE0ZDkzOGVkNTYyMjg5MmExNDdmMjZjMmVlNTI2MmI=";
+const SPLYNX_INV_URL =
+  "https://portal.umoja.network/api/2.0/admin/inventory/items";
 
-const STATUS_BLOCK = ["blocked"];
-const STATUS_UNBLOCK = ["active"];
+const SPLYNX_AUTH =
+  "Basic NGQwNzQwZGE2NjFjYjRlYTQzMjM2NmM5MGZhZGUxOWU6MmE0ZDkzOGVkNTYyMjg5MmExNDdmMjZjMmVlNTI2MmI=";
 
-// HTTPS agent for PortaOne self-signed certs
 const portaOneAgent = new https.Agent({ rejectUnauthorized: false });
 
-// --------------------
-// GET i_account FROM INVENTORY (product_id = 5)
-// --------------------
+const STATUS_BLOCK = ["blocked", "sim blocked", "new", "inactive"];
+const STATUS_UNBLOCK = ["active", "sim not blocked"];
+
+// --------------- Inventory lookup ---------------
 async function getMsisdnIdByCustomerId(customerId) {
-    try {
-        console.log("INVENTORY: Fetching items from Splynx...");
-        const response = await axios.get(SPLYNX_INV_URL, {
-            headers: { Authorization: SPLYNX_AUTH, "Content-Type": "application/json" },
-            timeout: 10000
-        });
+  try {
+    const response = await axios.get(SPLYNX_INV_URL, {
+      headers: { Authorization: SPLYNX_AUTH },
+      timeout: 10000,
+    });
 
-        const items = response.data || [];
-        console.log(`INVENTORY: ${items.length} items fetched`);
+    const items = response.data || [];
 
-        // Find inventory item for this customer with product_id = 5
-        const match = items.find(
-            item => Number(item.customer_id) === Number(customerId) && Number(item.product_id) === 5
-        );
+    const match = items.find(
+      (item) =>
+        Number(item.customer_id) === Number(customerId) &&
+        Number(item.product_id) === 5
+    );
 
-        if (!match) {
-            console.log(`INVENTORY: No product_id=5 found for customer_id ${customerId}`);
-            return null;
-        }
+    if (!match) return null;
 
-        return match.additional_attributes?.msisdn_id || null;
-    } catch (err) {
-        console.error("INVENTORY ERROR:", err.response?.data || err.message);
-        return null;
-    }
+    return match.additional_attributes?.msisdn_id || null;
+  } catch (err) {
+    console.error("INVENTORY ERROR:", err.message);
+    return null;
+  }
 }
 
-// --------------------
-// BLOCK / UNBLOCK SIM USING PORTAONE
-// --------------------
+// --------------- PortaOne block/unblock (WITH RETRY) ---------------
 async function blockUnblockSim(i_account, action) {
-    try {
-        const blocked = action === "block" ? "Y" : "N";
-        const response = await axios.post(
-            `${PORTAONE_API_URL}/Account/update_account`,
-            { params: { account_info: { i_account, blocked } } },
-            {
-                headers: { Authorization: `Bearer ${PORTAONE_API_KEY}`, "Content-Type": "application/json" },
-                httpsAgent: portaOneAgent
-            }
-        );
+  const blocked = action === "block" ? "Y" : "N";
 
-        console.log(`PORTAONE: ${action.toUpperCase()} successful for i_account ${i_account}`);
-        return response.data;
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    try {
+      console.log(`PORTAONE: Attempt ${attempt} for i_account ${i_account}`);
+
+      await axios.post(
+        `${PORTAONE_API_URL}/Account/update_account`,
+        {
+          params: { account_info: { i_account, blocked } },
+        },
+        {
+          headers: {
+            Authorization: `Bearer ${PORTAONE_API_KEY}`,
+            "Content-Type": "application/json",
+          },
+          httpsAgent: portaOneAgent,
+          timeout: 8000,
+        }
+      );
+
+      console.log(
+        `PORTAONE: ${action.toUpperCase()} succeeded for ${i_account}`
+      );
+      return true;
     } catch (err) {
-        console.error("PORTAONE ERROR:", err.response?.data || err.message);
+      console.error(
+        `PORTAONE ERROR (attempt ${attempt}):`,
+        err.message || err.response?.data
+      );
+
+      if (attempt < 3) {
+        const delay = 1000 * Math.pow(2, attempt - 1);
+        console.log(`Retrying in ${delay}ms...`);
+        await new Promise((r) => setTimeout(r, delay));
+      }
     }
+  }
+
+  console.error(
+    `❌ PORTAONE: All retries failed for i_account ${i_account}`
+  );
+  return false;
 }
 
-// --------------------
-// WEBHOOK FROM SPLYNX
-// --------------------
+// --------------- WEBHOOK HANDLER ---------------
 app.post("/splynx-webhook", async (req, res) => {
-    const data = req.body.data || {};
-    const attributes = data.attributes || {};
-    const attributesAdditional = data.attributes_additional || {};
+  console.log("WEBHOOK: RAW payload received:", req.body);
 
-    // Extract customer_id
-    const customerId = data.customer_id || attributes.id;
+  if (req.body.type === "ping") {
+    return res.json({ success: true });
+  }
 
-    // Extract sim status
-    let statusRaw = (attributes.status || attributesAdditional.sim_status || '').toLowerCase();
-    let status;
-    if (statusRaw.includes('blocked')) status = 'blocked';
-    else if (statusRaw.includes('not blocked') || statusRaw.includes('active')) status = 'active';
+  const data = req.body.data || {};
+  const attributes = data.attributes || {};
+  const extra = data.attributes_additional || {};
+  const changed = data.changed_attributes || {};
 
-    console.log(`WEBHOOK: customer_id=${customerId}, status=${status}`);
-    console.log("WEBHOOK: RAW payload received:", req.body);
+  // Extract customer_id
+  const customerId = data.customer_id || attributes.id;
 
-    if (!customerId || !status) {
-        console.log("WEBHOOK ERROR: cannot extract customer_id or status");
-        return res.status(400).json({ error: "Missing customer_id or status" });
+  // Extract status
+  let statusRaw =
+    attributes.status ||
+    extra.sim_status ||
+    "";
+
+  statusRaw = statusRaw.toLowerCase();
+
+  let status = null;
+  if (STATUS_BLOCK.includes(statusRaw)) status = "blocked";
+  else if (STATUS_UNBLOCK.includes(statusRaw)) status = "active";
+
+  // ------ IGNORE event if status did NOT change ------
+  if (!changed.status) {
+    console.log(
+      `IGNORED WEBHOOK: Status did NOT change for customer ${customerId}`
+    );
+    return res.json({ ignored: true });
+  }
+
+  // Validate
+  if (!customerId || !status) {
+    console.log("WEBHOOK ERROR: customer_id or status missing");
+    return res.status(400).json({ error: "Missing customer_id or status" });
+  }
+
+  console.log(`WEBHOOK PARSED → customerId=${customerId}, new status=${status}`);
+  res.json({ success: true });
+
+  // Async logic
+  (async () => {
+    const i_account = await getMsisdnIdByCustomerId(customerId);
+
+    if (!i_account) {
+      console.log(
+        `INVENTORY: No i_account found for customer ${customerId}`
+      );
+      return;
     }
 
-    // Immediate response to Splynx
-    res.json({ success: true });
+    console.log(`INVENTORY: Found i_account = ${i_account}`);
 
-    // Async processing
-    (async () => {
-        const i_account = await getMsisdnIdByCustomerId(customerId);
-
-        if (!i_account) {
-            console.log(`INVENTORY: No i_account found for customer_id ${customerId}`);
-            return;
-        }
-
-        console.log(`INVENTORY: Found i_account: ${i_account}`);
-
-        if (STATUS_BLOCK.includes(status)) {
-            await blockUnblockSim(i_account, "block");
-        } else if (STATUS_UNBLOCK.includes(status)) {
-            await blockUnblockSim(i_account, "unblock");
-        } else {
-            console.log(`WEBHOOK: Status "${status}" ignored — no action`);
-        }
-    })();
+    if (status === "blocked") {
+      await blockUnblockSim(i_account, "block");
+    } else {
+      await blockUnblockSim(i_account, "unblock");
+    }
+  })();
 });
 
-// --------------------
-// START SERVER
-// --------------------
+// --------------- START SERVER ---------------
 const PORT = process.env.PORT || 5000;
-app.listen(PORT, () => console.log(`✅ Middleware running on port ${PORT} — ready to receive webhooks`));
+app.listen(PORT, () =>
+  console.log(`✅ Middleware running on port ${PORT} — ready`)
+);
