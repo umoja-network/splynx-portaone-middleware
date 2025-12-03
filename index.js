@@ -96,8 +96,9 @@ async function blockUnblockSim(i_account, action) {
 }
 
 // --------------- WEBHOOK HANDLER ---------------
+// --------------- WEBHOOK HANDLER ---------------
 app.post("/splynx-webhook", async (req, res) => {
-  console.log("WEBHOOK: RAW payload received:", req.body);
+  console.log("WEBHOOK: Payload received");
 
   if (req.body.type === "ping") {
     return res.json({ success: true });
@@ -111,56 +112,70 @@ app.post("/splynx-webhook", async (req, res) => {
   // Extract customer_id
   const customerId = data.customer_id || attributes.id;
 
-  // Extract status
-  let statusRaw =
-    attributes.status ||
-    extra.sim_status ||
-    "";
+  if (!customerId) {
+    console.log("WEBHOOK ERROR: Missing customer_id");
+    return res.status(400).json({ error: "Missing customer_id" });
+  }
 
-  statusRaw = statusRaw.toLowerCase();
+  // 1. Check if RELEVANT fields changed
+  // We proceed if 'status' changed OR 'sim_status' changed
+  const mainStatusChanged = !!changed.status;
+  // Note: Check the exact key name Splynx uses for custom field changes in your specific version logs. 
+  // It is usually the field name (e.g., 'sim_status').
+  const simStatusChanged = !!changed.sim_status; 
 
-  let status = null;
-  if (STATUS_BLOCK.includes(statusRaw)) status = "blocked";
-  else if (STATUS_UNBLOCK.includes(statusRaw)) status = "active";
-
-  // ------ IGNORE event if status did NOT change ------
-  if (!changed.status) {
-    console.log(
-      `IGNORED WEBHOOK: Status did NOT change for customer ${customerId}`
-    );
+  if (!mainStatusChanged && !simStatusChanged) {
+    console.log(`IGNORED: Neither 'status' nor 'sim_status' changed for ID ${customerId}`);
     return res.json({ ignored: true });
   }
 
-  // Validate
-  if (!customerId || !status) {
-    console.log("WEBHOOK ERROR: customer_id or status missing");
-    return res.status(400).json({ error: "Missing customer_id or status" });
+  // 2. Determine EFFECTIVE Status
+  const mainStatus = (attributes.status || "").toLowerCase();
+  const simStatus = (extra.sim_status || "").toLowerCase();
+
+  let action = null; // 'block' or 'unblock'
+
+  // LOGIC: Main Status overrides everything if blocked. 
+  // If Main is active, Sim Status takes over.
+  
+  if (STATUS_BLOCK.includes(mainStatus)) {
+    // If Customer is Inactive/Blocked -> BLOCK SIM
+    action = "block";
+    console.log(`DECISION: Customer Status is '${mainStatus}' -> BLOCKING`);
+  } 
+  else if (STATUS_UNBLOCK.includes(mainStatus)) {
+    // Customer is Active, now check the specific SIM field
+    if (STATUS_BLOCK.includes(simStatus)) {
+      action = "block";
+      console.log(`DECISION: Customer is Active but Sim Status is '${simStatus}' -> BLOCKING`);
+    } else {
+      action = "unblock";
+      console.log(`DECISION: Customer is Active and Sim Status is '${simStatus}' -> UNBLOCKING`);
+    }
   }
 
-  console.log(`WEBHOOK PARSED → customerId=${customerId}, new status=${status}`);
-  res.json({ success: true });
+  if (!action) {
+    console.log(`WEBHOOK ERROR: Could not determine action from Status: '${mainStatus}' / Sim: '${simStatus}'`);
+    // Return success to Splynx so it stops retrying, but log the error
+    return res.json({ error: "Unknown status mapping" });
+  }
 
-  // Async logic
+  // Send immediate response to Splynx
+  res.json({ success: true, action_taken: action });
+
+  // 3. Execute Async Logic
   (async () => {
     const i_account = await getMsisdnIdByCustomerId(customerId);
 
     if (!i_account) {
-      console.log(
-        `INVENTORY: No i_account found for customer ${customerId}`
-      );
+      console.log(`INVENTORY: No i_account found for customer ${customerId}`);
       return;
     }
 
-    console.log(`INVENTORY: Found i_account = ${i_account}`);
-
-    if (status === "blocked") {
-      await blockUnblockSim(i_account, "block");
-    } else {
-      await blockUnblockSim(i_account, "unblock");
-    }
+    console.log(`EXECUTING: ${action.toUpperCase()} for i_account ${i_account}`);
+    await blockUnblockSim(i_account, action);
   })();
 });
-
 // --------------- START SERVER ---------------
 const PORT = process.env.PORT || 5000;
 app.listen(PORT, () =>
