@@ -16,7 +16,8 @@ const SPLYNX_INV_URL =
   "https://portal.umoja.network/api/2.0/admin/inventory/items";
 
 const SPLYNX_AUTH =
-  "Basic NGQwNzQwZGA2NjFjYjRlYTQzMjM2NmM5MGZhZGUxOWU6MmE0ZDkzOGVkNTYyMjg5MmExNDdmMjZjMmVlNTI2MmI=";
+  "Basic NGQwNzQwZGE2NjFjYjRlYTQzMjM2NmM5MGZhZGUxOWU6MmE0ZDkzOGVkNTYyMjg5MmExNDdmMjZjMmVlNTI2MmI=";
+  
 
 const portaOneAgent = new https.Agent({ rejectUnauthorized: false });
 
