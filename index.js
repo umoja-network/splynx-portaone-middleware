@@ -17,10 +17,10 @@ const SPLYNX_INV_URL =
 
 const SPLYNX_AUTH =
   "Basic NGQwNzQwZGE2NjFjYjRlYTQzMjM2NmM5MGZhZGUxOWU6MmE0ZDkzOGVkNTYyMjg5MmExNDdmMjZjMmVlNTI2MmI=";
-  
 
 const portaOneAgent = new https.Agent({ rejectUnauthorized: false });
 
+// Customer Status Logic
 const STATUS_BLOCK = ["blocked", "sim blocked", "new", "inactive"];
 const STATUS_UNBLOCK = ["active", "sim not blocked"];
 
@@ -129,37 +129,30 @@ app.post("/splynx-webhook", async (req, res) => {
   const mainStatus = (attributes.status || "").toLowerCase();
   const simStatus = (extra.sim_status || "").toLowerCase();
 
-  // ------------- NEW FEATURE: SKIP WHEN SIM STATUS IS EMPTY -------------
-  if (simStatus === "" || simStatus === null || simStatus === undefined) {
+  // -------------------- NEW RULE --------------------
+  // Skip if sim status is empty
+  if (!simStatus || simStatus.trim() === "") {
     console.log(
-      `SKIPPED: SIM STATUS IS EMPTY for customer ${customerId} — no action taken`
+      `SKIPPED: SIM STATUS EMPTY for customer ${customerId} — no action taken`
     );
-
     return res.json({
       skipped: true,
       reason: "Sim status empty",
     });
   }
-  // ----------------------------------------------------------------------
+  // --------------------------------------------------
 
+  // -------------------- DECISION LOGIC --------------------
   let action = null;
 
+  // Customer status decides everything
   if (STATUS_BLOCK.includes(mainStatus)) {
     action = "block";
     console.log(`DECISION: Main Status '${mainStatus}' → BLOCK`);
   } else if (STATUS_UNBLOCK.includes(mainStatus)) {
-    if (STATUS_BLOCK.includes(simStatus)) {
-      action = "block";
-      console.log(
-        `DECISION: Main = Active but SIM '${simStatus}' → BLOCK`
-      );
-    } else {
-      action = "unblock";
-      console.log(`DECISION: Main = Active and SIM '${simStatus}' → UNBLOCK`);
-    }
-  }
-
-  if (!action) {
+    action = "unblock";
+    console.log(`DECISION: Main Status '${mainStatus}' → UNBLOCK`);
+  } else {
     console.log(
       `WEBHOOK ERROR: Unknown mapping (main='${mainStatus}', sim='${simStatus}')`
     );
