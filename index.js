@@ -55,8 +55,6 @@ async function blockUnblockSim(i_account, action) {
 
   for (let attempt = 1; attempt <= 3; attempt++) {
     try {
-      console.log(`PORTAONE: Attempt ${attempt} for i_account ${i_account}`);
-
       await axios.post(
         `${PORTAONE_API_URL}/Account/update_account`,
         {
@@ -73,32 +71,30 @@ async function blockUnblockSim(i_account, action) {
       );
 
       console.log(
-        `PORTAONE: ${action.toUpperCase()} succeeded for ${i_account}`
+        `SUCCESS: ${action.toUpperCase()} succeeded for i_account ${i_account}`
       );
       return true;
+
     } catch (err) {
       console.error(
-        `PORTAONE ERROR (attempt ${attempt}):`,
+        `PORTAONE ERROR (attempt ${attempt}) for ${i_account}:`,
         err.message || err.response?.data
       );
 
       if (attempt < 3) {
         const delay = 1000 * Math.pow(2, attempt - 1);
-        console.log(`Retrying in ${delay}ms...`);
         await new Promise((r) => setTimeout(r, delay));
       }
     }
   }
 
-  console.error(`❌ PORTAONE: All retries failed for i_account ${i_account}`);
+  console.error(`❌ FAILED: All retries failed for i_account ${i_account}`);
   return false;
 }
 
 // --------------- WEBHOOK HANDLER ---------------
-
 app.post("/splynx-webhook", async (req, res) => {
-  console.log("WEBHOOK: Payload received");
-
+  
   if (req.body.type === "ping") {
     return res.json({ success: true });
   }
@@ -111,7 +107,7 @@ app.post("/splynx-webhook", async (req, res) => {
   const customerId = data.customer_id || attributes.id;
 
   if (!customerId) {
-    console.log("WEBHOOK ERROR: Missing customer_id");
+    console.error("WEBHOOK ERROR: Missing customer_id");
     return res.status(400).json({ error: "Missing customer_id" });
   }
 
@@ -120,41 +116,30 @@ app.post("/splynx-webhook", async (req, res) => {
   const simStatusChanged = !!changed.sim_status;
 
   if (!mainStatusChanged && !simStatusChanged) {
-    console.log(
-      `IGNORED: Neither 'status' nor 'sim_status' changed for ID ${customerId}`
-    );
     return res.json({ ignored: true });
   }
 
   const mainStatus = (attributes.status || "").toLowerCase();
   const simStatus = (extra.sim_status || "").toLowerCase();
 
-  // -------------------- NEW RULE --------------------
-  // Skip if sim status is empty
+  // Skip empty sim status (silent)
   if (!simStatus || simStatus.trim() === "") {
-    console.log(
-      `SKIPPED: SIM STATUS EMPTY for customer ${customerId} — no action taken`
-    );
     return res.json({
       skipped: true,
       reason: "Sim status empty",
     });
   }
-  // --------------------------------------------------
 
   // -------------------- DECISION LOGIC --------------------
   let action = null;
 
-  // Customer status decides everything
   if (STATUS_BLOCK.includes(mainStatus)) {
     action = "block";
-    console.log(`DECISION: Main Status '${mainStatus}' → BLOCK`);
   } else if (STATUS_UNBLOCK.includes(mainStatus)) {
     action = "unblock";
-    console.log(`DECISION: Main Status '${mainStatus}' → UNBLOCK`);
   } else {
-    console.log(
-      `WEBHOOK ERROR: Unknown mapping (main='${mainStatus}', sim='${simStatus}')`
+    console.error(
+      `STATUS MAPPING ERROR: Unknown main status '${mainStatus}' for customer ${customerId}`
     );
     return res.json({ error: "Unknown status mapping" });
   }
@@ -162,18 +147,17 @@ app.post("/splynx-webhook", async (req, res) => {
   // Respond immediately
   res.json({ success: true, action_taken: action });
 
-  // Async processing
+  // Background async processing
   (async () => {
     const i_account = await getMsisdnIdByCustomerId(customerId);
 
     if (!i_account) {
-      console.log(`INVENTORY: No i_account found for customer ${customerId}`);
+      console.error(
+        `INVENTORY ERROR: No i_account found for customer ${customerId}`
+      );
       return;
     }
 
-    console.log(
-      `EXECUTING: ${action.toUpperCase()} for i_account ${i_account}`
-    );
     await blockUnblockSim(i_account, action);
   })();
 });
@@ -181,5 +165,5 @@ app.post("/splynx-webhook", async (req, res) => {
 // --------------- START SERVER ---------------
 const PORT = process.env.PORT || 5000;
 app.listen(PORT, () =>
-  console.log(`✅ Middleware running on port ${PORT} — ready`)
+  console.log(`Middleware running on port ${PORT}`)
 );
