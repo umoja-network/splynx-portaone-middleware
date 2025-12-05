@@ -21,7 +21,7 @@ const SPLYNX_AUTH =
 const portaOneAgent = new https.Agent({ rejectUnauthorized: false });
 
 // Customer Status Logic
-const STATUS_BLOCK = ["blocked", "sim blocked", "new", "inactive"];
+const STATUS_BLOCK = ["blocked", "sim blocked", "new", "disabled"];
 const STATUS_UNBLOCK = ["active", "sim not blocked"];
 
 // --------------- Inventory lookup ---------------
