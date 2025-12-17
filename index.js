@@ -10,7 +10,6 @@ app.use(express.json());
 
 // -------------------- CONFIG --------------------
 const PORTAONE_API_URL = process.env.PORTAONE_API_URL;
-const PORTAONE_API_KEY = process.env.PORTAONE_API_KEY;
 
 const SPLYNX_INV_URL =
   "https://portal.umoja.network/api/2.0/admin/inventory/items";
@@ -24,7 +23,43 @@ const portaOneAgent = new https.Agent({ rejectUnauthorized: false });
 const STATUS_BLOCK = ["blocked", "sim blocked", "new", "disabled"];
 const STATUS_UNBLOCK = ["active", "sim not blocked"];
 
-// --------------- Inventory lookup ---------------
+// -------------------- PORTAONE TOKEN MANAGER --------------------
+let portaoneAccessToken = null;
+let portaoneExpiresAt = 0;
+
+async function refreshPortaOneToken() {
+  const res = await axios.post(
+    `${PORTAONE_API_URL}/Session/login`,
+    {
+      params: {
+        login: process.env.PORTAONE_LOGIN,
+        token: process.env.PORTAONE_LOGIN_TOKEN,
+      },
+    },
+    {
+      headers: {
+        Authorization: `Bearer ${process.env.PORTAONE_AUTH_BEARER}`,
+        "Content-Type": "application/json",
+      },
+      httpsAgent: portaOneAgent,
+      timeout: 10000,
+    }
+  );
+
+  portaoneAccessToken = res.data.access_token;
+  portaoneExpiresAt = Date.now() + res.data.expires_in * 1000;
+
+  console.log("🔑 PortaOne access token refreshed");
+}
+
+async function getPortaOneAccessToken() {
+  if (!portaoneAccessToken || Date.now() > portaoneExpiresAt - 60_000) {
+    await refreshPortaOneToken();
+  }
+  return portaoneAccessToken;
+}
+
+// -------------------- INVENTORY LOOKUP --------------------
 async function getMsisdnIdByCustomerId(customerId) {
   try {
     const response = await axios.get(SPLYNX_INV_URL, {
@@ -49,20 +84,24 @@ async function getMsisdnIdByCustomerId(customerId) {
   }
 }
 
-// --------------- PortaOne block/unblock (WITH RETRY) ---------------
+// -------------------- PORTAONE BLOCK / UNBLOCK (WITH RETRY) --------------------
 async function blockUnblockSim(i_account, action) {
   const blocked = action === "block" ? "Y" : "N";
 
   for (let attempt = 1; attempt <= 3; attempt++) {
     try {
+      const token = await getPortaOneAccessToken();
+
       await axios.post(
         `${PORTAONE_API_URL}/Account/update_account`,
         {
-          params: { account_info: { i_account, blocked } },
+          params: {
+            account_info: { i_account, blocked },
+          },
         },
         {
           headers: {
-            Authorization: `Bearer ${PORTAONE_API_KEY}`,
+            Authorization: `Bearer ${token}`,
             "Content-Type": "application/json",
           },
           httpsAgent: portaOneAgent,
@@ -71,14 +110,14 @@ async function blockUnblockSim(i_account, action) {
       );
 
       console.log(
-        `SUCCESS: ${action.toUpperCase()} succeeded for i_account ${i_account}`
+        `✅ SUCCESS: ${action.toUpperCase()} succeeded for i_account ${i_account}`
       );
       return true;
 
     } catch (err) {
       console.error(
-        `PORTAONE ERROR (attempt ${attempt}) for ${i_account}:`,
-        err.message || err.response?.data
+        `❌ PORTAONE ERROR (attempt ${attempt}) for ${i_account}:`,
+        err.response?.data || err.message
       );
 
       if (attempt < 3) {
@@ -92,9 +131,9 @@ async function blockUnblockSim(i_account, action) {
   return false;
 }
 
-// --------------- WEBHOOK HANDLER ---------------
+// -------------------- WEBHOOK HANDLER --------------------
 app.post("/splynx-webhook", async (req, res) => {
-  
+
   if (req.body.type === "ping") {
     return res.json({ success: true });
   }
@@ -111,7 +150,6 @@ app.post("/splynx-webhook", async (req, res) => {
     return res.status(400).json({ error: "Missing customer_id" });
   }
 
-  // Determine which fields changed
   const mainStatusChanged = !!changed.status;
   const simStatusChanged = !!changed.sim_status;
 
@@ -122,15 +160,10 @@ app.post("/splynx-webhook", async (req, res) => {
   const mainStatus = (attributes.status || "").toLowerCase();
   const simStatus = (extra.sim_status || "").toLowerCase();
 
-  // Skip empty sim status (silent)
   if (!simStatus || simStatus.trim() === "") {
-    return res.json({
-      skipped: true,
-      reason: "Sim status empty",
-    });
+    return res.json({ skipped: true, reason: "Sim status empty" });
   }
 
-  // -------------------- DECISION LOGIC --------------------
   let action = null;
 
   if (STATUS_BLOCK.includes(mainStatus)) {
@@ -139,15 +172,13 @@ app.post("/splynx-webhook", async (req, res) => {
     action = "unblock";
   } else {
     console.error(
-      `STATUS MAPPING ERROR: Unknown main status '${mainStatus}' for customer ${customerId}`
+      `STATUS MAPPING ERROR: Unknown status '${mainStatus}' for customer ${customerId}`
     );
     return res.json({ error: "Unknown status mapping" });
   }
 
-  // Respond immediately
   res.json({ success: true, action_taken: action });
 
-  // Background async processing
   (async () => {
     const i_account = await getMsisdnIdByCustomerId(customerId);
 
@@ -162,8 +193,15 @@ app.post("/splynx-webhook", async (req, res) => {
   })();
 });
 
-// --------------- START SERVER ---------------
+// -------------------- START SERVER --------------------
 const PORT = process.env.PORT || 5000;
-app.listen(PORT, () =>
-  console.log(`Middleware running on port ${PORT}`)
-);
+
+app.listen(PORT, async () => {
+  console.log(`🚀 Middleware running on port ${PORT}`);
+
+  try {
+    await refreshPortaOneToken();
+  } catch (err) {
+    console.error("Initial PortaOne token fetch failed:", err.message);
+  }
+});
