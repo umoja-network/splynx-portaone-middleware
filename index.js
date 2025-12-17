@@ -92,22 +92,24 @@ async function blockUnblockSim(i_account, action) {
     try {
       const token = await getPortaOneAccessToken();
 
-      await axios.post(
-        `${PORTAONE_API_URL}/Account/update_account`,
-        {
+      await axios({
+        method: "post",
+        url: `${PORTAONE_API_URL}/Account/update_account`,
+        httpsAgent: portaOneAgent,
+        headers: {
+          Authorization: `Bearer ${token}`,
+          "Content-Type": "application/json",
+        },
+        data: {
           params: {
-            account_info: { i_account, blocked },
+            account_info: {
+              i_account,
+              blocked,
+            },
           },
         },
-        {
-          headers: {
-            Authorization: `Bearer ${token}`,
-            "Content-Type": "application/json",
-          },
-          httpsAgent: portaOneAgent,
-          timeout: 8000,
-        }
-      );
+        timeout: 8000,
+      });
 
       console.log(
         `✅ SUCCESS: ${action.toUpperCase()} succeeded for i_account ${i_account}`
